@@ -92,6 +92,17 @@ const FormatExperience = forwardRef<HTMLElement, { playTrailerTrigger?: number }
     const [isMobile, setIsMobile] = useState(false);
     const chipsRef = useRef<HTMLDivElement>(null);
     const videoRef = useRef<HTMLVideoElement>(null);
+    const savedTimeRef = useRef<number>(0);
+    const wasPlayingRef = useRef<boolean>(false);
+    const stalledTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+    useEffect(() => {
+      return () => {
+        if (stalledTimeoutRef.current) {
+          clearTimeout(stalledTimeoutRef.current);
+        }
+      };
+    }, []);
 
     useEffect(() => {
       const checkMobile = () => {
@@ -108,19 +119,21 @@ const FormatExperience = forwardRef<HTMLElement, { playTrailerTrigger?: number }
         return;
       }
 
-      // Explicitly control video lifecycle on switch start
-      if (videoRef.current) {
+      // Capture time and play status before changing format
+      if (videoRef.current && isPlayingTrailer) {
+        savedTimeRef.current = videoRef.current.currentTime;
+        wasPlayingRef.current = !videoRef.current.paused;
         try {
           videoRef.current.pause();
-          videoRef.current.currentTime = 0;
-          videoRef.current.src = format.id === "imax70mm" ? "/videos/imax70mm.mp4" : "/videos/trailer.mp4";
-          videoRef.current.load();
         } catch (e) {
-          console.error("Error resetting video element during selectFormat:", e);
+          console.error("Error pausing video during selectFormat:", e);
         }
+      } else {
+        savedTimeRef.current = 0;
+        wasPlayingRef.current = false;
       }
-      setIsLoaded(false);
 
+      setIsLoaded(false);
       setIsChanging(true);
       setTimeout(() => {
         setActiveFormat(format);
@@ -128,8 +141,63 @@ const FormatExperience = forwardRef<HTMLElement, { playTrailerTrigger?: number }
       }, 380);
     };
 
+    const handleLoadedMetadata = () => {
+      if (videoRef.current) {
+        const restoreTime = savedTimeRef.current;
+        if (restoreTime > 0) {
+          videoRef.current.currentTime = restoreTime;
+          savedTimeRef.current = 0; // Reset after restoring
+        }
+        if (wasPlayingRef.current) {
+          videoRef.current.play().catch((err) => {
+            console.warn("Auto-play recovery failed/blocked:", err);
+          });
+        }
+      }
+    };
+
+    const handleCanPlay = () => {
+      setIsLoaded(true);
+      if (stalledTimeoutRef.current) {
+        clearTimeout(stalledTimeoutRef.current);
+      }
+    };
+
+    const handleCanPlayThrough = () => {
+      setIsLoaded(true);
+    };
+
+    const handleWaiting = () => {
+      setIsLoaded(false);
+    };
+
+    const handlePlaying = () => {
+      setIsLoaded(true);
+      if (stalledTimeoutRef.current) {
+        clearTimeout(stalledTimeoutRef.current);
+      }
+    };
+
+    const handleStalled = () => {
+      setIsLoaded(false);
+
+      if (stalledTimeoutRef.current) {
+        clearTimeout(stalledTimeoutRef.current);
+      }
+      stalledTimeoutRef.current = setTimeout(() => {
+        if (videoRef.current && !videoRef.current.paused) {
+          console.warn("Video playback stalled, attempting play recovery...");
+          videoRef.current.play().catch((err) => {
+            console.error("Failed to recover stalled video playback:", err);
+          });
+        }
+      }, 4000);
+    };
+
     useEffect(() => {
       if (playTrailerTrigger > 0) {
+        wasPlayingRef.current = true;
+        savedTimeRef.current = 0;
         setIsPlayingTrailer(true);
       }
     }, [playTrailerTrigger]);
@@ -141,7 +209,6 @@ const FormatExperience = forwardRef<HTMLElement, { playTrailerTrigger?: number }
       if (videoRef.current) {
         try {
           videoRef.current.pause();
-          videoRef.current.currentTime = 0;
           videoRef.current.src = activeFormat.id === "imax70mm" ? "/videos/imax70mm.mp4" : "/videos/trailer.mp4";
           videoRef.current.load();
         } catch (e) {
@@ -254,7 +321,6 @@ const FormatExperience = forwardRef<HTMLElement, { playTrailerTrigger?: number }
                         </div>
                       )}
                       <video
-                        key={activeFormat.id}
                         ref={videoRef}
                         src={isImax70mm ? "/videos/imax70mm.mp4" : "/videos/trailer.mp4"}
                         poster="/trailer-poster.jpg"
@@ -262,8 +328,12 @@ const FormatExperience = forwardRef<HTMLElement, { playTrailerTrigger?: number }
                         autoPlay
                         controls
                         playsInline
-                        onLoadedData={() => setIsLoaded(true)}
-                        onCanPlay={() => setIsLoaded(true)}
+                        onLoadedMetadata={handleLoadedMetadata}
+                        onCanPlay={handleCanPlay}
+                        onCanPlayThrough={handleCanPlayThrough}
+                        onWaiting={handleWaiting}
+                        onPlaying={handlePlaying}
+                        onStalled={handleStalled}
                         className="absolute inset-0 w-full h-full border-0"
                         style={{
                           zIndex: 0,
@@ -277,6 +347,11 @@ const FormatExperience = forwardRef<HTMLElement, { playTrailerTrigger?: number }
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
+                          savedTimeRef.current = 0;
+                          wasPlayingRef.current = false;
+                          if (stalledTimeoutRef.current) {
+                            clearTimeout(stalledTimeoutRef.current);
+                          }
                           setIsPlayingTrailer(false);
                           setIsLoaded(false);
                         }}
@@ -292,6 +367,8 @@ const FormatExperience = forwardRef<HTMLElement, { playTrailerTrigger?: number }
                     <div
                       className="absolute inset-0 w-full h-full overflow-hidden group cursor-pointer"
                       onClick={() => {
+                        wasPlayingRef.current = true;
+                        savedTimeRef.current = 0;
                         setIsPlayingTrailer(true);
                         setIsLoaded(false);
                       }}
